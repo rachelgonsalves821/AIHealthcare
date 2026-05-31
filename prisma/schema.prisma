@@ -1,0 +1,289 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum OrgType {
+  HEALTH_SYSTEM
+  SPECIALTY_GROUP
+  VENDOR_PARTNER
+}
+
+enum UserRole {
+  ADMIN
+  RCM_STAFF
+  CLINICIAN
+  REVIEWER
+}
+
+enum CaseType {
+  PRIOR_AUTH
+  DENIAL
+}
+
+enum CaseStatus {
+  RECEIVED
+  TRIAGED
+  EVIDENCE_READY
+  P2P_SCHEDULED
+  APPEAL_DRAFTED
+  SUBMITTED
+  RESOLVED
+}
+
+enum CaseSource {
+  EHR
+  RCM
+  VENDOR_HANDOFF
+}
+
+enum EvidencePackStatus {
+  DRAFT
+  REVIEWED
+}
+
+enum P2POutcome {
+  PENDING
+  APPROVED
+  DENIED
+  RESCHEDULED
+}
+
+enum AppealStatus {
+  DRAFT
+  AWAITING_SIGNOFF
+  SIGNED
+  SUBMITTED
+  WON
+  LOST
+}
+
+enum OutcomeResolution {
+  APPROVED
+  UPHELD
+  PARTIAL
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  type      OrgType
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users    User[]
+  patients Patient[]
+  cases    Case[]
+  auditLogs AuditLog[]
+
+  @@map("organizations")
+}
+
+model User {
+  id          String   @id @default(cuid())
+  orgId       String
+  clerkUserId String   @unique
+  email       String
+  name        String
+  role        UserRole
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org          Organization @relation(fields: [orgId], references: [id])
+  assignedCases Case[]      @relation("AssignedCases")
+  evidencePacks EvidencePack[]
+  p2pReviews   PeerToPeer[] @relation("ReviewingPhysician")
+  signedAppeals Appeal[]    @relation("ClinicianSignoff")
+
+  @@index([orgId])
+  @@index([clerkUserId])
+  @@map("users")
+}
+
+model Patient {
+  id              String   @id @default(cuid())
+  orgId           String
+  externalMrnHash String
+  dateOfBirth     DateTime?
+  sex             String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  org   Organization @relation(fields: [orgId], references: [id])
+  cases Case[]
+
+  @@unique([orgId, externalMrnHash])
+  @@index([orgId])
+  @@map("patients")
+}
+
+model Payer {
+  id         String   @id @default(cuid())
+  name       String
+  externalId String   @unique
+  region     String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  criteria PayerCriteria[]
+  cases    Case[]
+  outcomes Outcome[]
+
+  @@map("payers")
+}
+
+model PayerCriteria {
+  id              String    @id @default(cuid())
+  payerId         String
+  serviceType     String
+  region          String
+  criteriaText    String
+  sourceUrl       String?
+  version         Int       @default(1)
+  effectiveDate   DateTime  @default(now())
+  supersededById  String?   @unique
+  createdAt       DateTime  @default(now())
+
+  payer       Payer          @relation(fields: [payerId], references: [id])
+  supersededBy PayerCriteria? @relation("CriteriaVersioning", fields: [supersededById], references: [id])
+  supersedes   PayerCriteria? @relation("CriteriaVersioning")
+
+  @@index([payerId, serviceType, region])
+  @@map("payer_criteria")
+}
+
+model Case {
+  id                  String     @id @default(cuid())
+  orgId               String
+  patientId           String
+  payerId             String
+  serviceType         String
+  caseType            CaseType
+  status              CaseStatus @default(RECEIVED)
+  complexityScore     Float?
+  source              CaseSource
+  externalRef         String?
+  assignedUserId      String?
+  recoveredValueCents Int?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id])
+  patient      Patient       @relation(fields: [patientId], references: [id])
+  payer        Payer         @relation(fields: [payerId], references: [id])
+  assignedUser User?         @relation("AssignedCases", fields: [assignedUserId], references: [id])
+  evidencePacks EvidencePack[]
+  peerToPeers  PeerToPeer[]
+  appeals      Appeal[]
+  outcomes     Outcome[]
+
+  @@index([orgId, status])
+  @@index([orgId, payerId])
+  @@index([assignedUserId])
+  @@map("cases")
+}
+
+model EvidencePack {
+  id                String             @id @default(cuid())
+  caseId            String
+  generatedByUserId String?
+  clinicalEvidence  Json
+  citedCriteria     Json
+  llmModel          String
+  status            EvidencePackStatus @default(DRAFT)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  case            Case  @relation(fields: [caseId], references: [id])
+  generatedByUser User? @relation(fields: [generatedByUserId], references: [id])
+
+  @@index([caseId])
+  @@map("evidence_packs")
+}
+
+model PeerToPeer {
+  id                  String     @id @default(cuid())
+  caseId              String
+  reviewingPhysicianId String
+  scheduledAt         DateTime
+  payerReviewerName   String?
+  prepPackRef         String?
+  outcome             P2POutcome @default(PENDING)
+  notes               String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  case               Case @relation(fields: [caseId], references: [id])
+  reviewingPhysician User @relation("ReviewingPhysician", fields: [reviewingPhysicianId], references: [id])
+
+  @@index([caseId])
+  @@map("peer_to_peer_reviews")
+}
+
+/// Hard constraint: status=SUBMITTED requires clinicianSignoffUserId AND signedOffAt to be non-null.
+/// Enforced in service layer AND via database check constraint in migration SQL.
+model Appeal {
+  id                    String       @id @default(cuid())
+  caseId                String
+  draftContent          String
+  draftedByModel        String
+  clinicianSignoffUserId String?
+  signedOffAt           DateTime?
+  status                AppealStatus @default(DRAFT)
+  submittedAt           DateTime?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+
+  case            Case  @relation(fields: [caseId], references: [id])
+  clinicianSignoff User? @relation("ClinicianSignoff", fields: [clinicianSignoffUserId], references: [id])
+
+  @@index([caseId])
+  @@map("appeals")
+}
+
+model Outcome {
+  id                  String            @id @default(cuid())
+  caseId              String
+  payerId             String
+  denialReason        String?
+  resolution          OutcomeResolution
+  recoveredValueCents Int?
+  resolvedAt          DateTime          @default(now())
+  createdAt           DateTime          @default(now())
+
+  case  Case  @relation(fields: [caseId], references: [id])
+  payer Payer @relation(fields: [payerId], references: [id])
+
+  @@index([payerId, resolution])
+  @@map("outcomes")
+}
+
+/// Append-only: no update or delete operations are allowed on this table.
+/// Enforced in the repository layer.
+model AuditLog {
+  id          String   @id @default(cuid())
+  orgId       String
+  actorUserId String?
+  action      String
+  entityType  String
+  entityId    String
+  metadata    Json     @default("{}")
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
