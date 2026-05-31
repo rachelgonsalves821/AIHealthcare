@@ -1,0 +1,55 @@
+{
+  "name": "complex-case-layer-backend",
+  "version": "0.1.0",
+  "description": "Backend for healthcare prior-authorization and denial workflow (Complex-Case Layer)",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "worker": "node dist/worker.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint \"src/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "db:migrate": "prisma migrate dev",
+    "db:generate": "prisma generate",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:deploy": "prisma migrate deploy"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest",
+    "@clerk/express": "latest",
+    "@prisma/client": "latest",
+    "cors": "latest",
+    "express": "latest",
+    "express-rate-limit": "latest",
+    "helmet": "latest",
+    "js-yaml": "latest",
+    "pg-boss": "latest",
+    "pino": "latest",
+    "pino-http": "latest",
+    "swagger-ui-express": "latest",
+    "uuid": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/cors": "latest",
+    "@types/express": "latest",
+    "@types/js-yaml": "latest",
+    "@types/node": "latest",
+    "@types/swagger-ui-express": "latest",
+    "@types/uuid": "latest",
+    "@typescript-eslint/eslint-plugin": "latest",
+    "@typescript-eslint/parser": "latest",
+    "eslint": "latest",
+    "prettier": "latest",
+    "prisma": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

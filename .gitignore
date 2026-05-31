@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files — never commit real secrets
+.env
+.env.local
+.env.*.local
+
+# Prisma generated client (re-generated on npm install)
+# Keep migrations but not generated client
+node_modules/.prisma/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Test coverage
+coverage/
+
+# Vitest cache
+.vitest/
