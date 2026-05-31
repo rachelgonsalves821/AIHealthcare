@@ -1,9 +1,19 @@
 import { createApp } from './app';
+import { config } from './config';
+import { logger } from './lib/logger';
 
-const port = process.env['PORT'] ?? 8080;
 const app = createApp();
 
-app.listen(port, () => {
-  // eslint-disable-next-line no-console
-  console.log(`Server listening on port ${port}`);
+const server = app.listen(config.PORT, () => {
+  logger.info({ port: config.PORT, env: config.NODE_ENV }, 'Server started');
 });
+
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM received — shutting down gracefully');
+  server.close(() => {
+    logger.info('HTTP server closed');
+    process.exit(0);
+  });
+});
+
+export { server };
