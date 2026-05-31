@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+.env.*
+coverage
+.vitest
+*.log
+logs
+.DS_Store
+.vscode
+.idea
+frontend
+docs
+tests

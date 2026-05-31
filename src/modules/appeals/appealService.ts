@@ -2,6 +2,7 @@ import { Appeal, AppealStatus, Prisma } from '@prisma/client';
 import { SignOffRequiredError, ForbiddenError, ConflictError } from '../../lib/errors';
 import * as repo from './appealRepository';
 import * as caseRepo from '../cases/caseRepository';
+import { enqueueAppealDraft as enqueueJob } from '../../jobs/enqueue';
 import { writeAuditLog } from '../audit/auditRepository';
 
 export async function getAppealById(id: string): Promise<Appeal> {
@@ -12,17 +13,16 @@ export async function getAppealsByCaseId(caseId: string): Promise<Appeal[]> {
   return repo.getAppealsByCaseId(caseId);
 }
 
-/**
- * Enqueues appeal draft generation (Phase 6 wires the actual pg-boss job).
- */
-export async function enqueueAppealDraft(caseId: string, orgId: string): Promise<string> {
+export async function enqueueAppealDraft(
+  caseId: string,
+  orgId: string,
+  requestedByUserId = 'system',
+): Promise<string> {
   await caseRepo.getCaseById(caseId, orgId);
-  return `appeal.draft:${caseId}`;
+  const jobId = await enqueueJob({ caseId, orgId, requestedByUserId });
+  return jobId ?? `appeal.draft:${caseId}`;
 }
 
-/**
- * Sign off on an appeal. Only CLINICIAN role (enforced at route layer too).
- */
 export async function signOffAppeal(
   id: string,
   clinicianUserId: string,
@@ -58,7 +58,6 @@ export async function submitAppeal(
 ): Promise<Appeal> {
   const appeal = await repo.getAppealById(id);
 
-  // Service-layer enforcement (belt-and-suspenders — DB CHECK constraint is the final guard)
   if (!appeal.clinicianSignoffUserId || !appeal.signedOffAt) {
     throw new SignOffRequiredError();
   }
