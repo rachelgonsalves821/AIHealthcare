@@ -1,6 +1,7 @@
-import { Appeal, AppealStatus } from '@prisma/client';
+import { Appeal, AppealStatus, Prisma } from '@prisma/client';
 import { SignOffRequiredError, ForbiddenError, ConflictError } from '../../lib/errors';
 import * as repo from './appealRepository';
+import * as caseRepo from '../cases/caseRepository';
 import { writeAuditLog } from '../audit/auditRepository';
 
 export async function getAppealById(id: string): Promise<Appeal> {
@@ -9,6 +10,14 @@ export async function getAppealById(id: string): Promise<Appeal> {
 
 export async function getAppealsByCaseId(caseId: string): Promise<Appeal[]> {
   return repo.getAppealsByCaseId(caseId);
+}
+
+/**
+ * Enqueues appeal draft generation (Phase 6 wires the actual pg-boss job).
+ */
+export async function enqueueAppealDraft(caseId: string, orgId: string): Promise<string> {
+  await caseRepo.getCaseById(caseId, orgId);
+  return `appeal.draft:${caseId}`;
 }
 
 /**
@@ -65,6 +74,7 @@ export async function submitAppeal(
     action: 'appeal.submitted',
     entityType: 'Appeal',
     entityId: id,
+    metadata: { caseId: appeal.caseId } as Prisma.InputJsonObject,
     ipAddress,
   });
   return updated;

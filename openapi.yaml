@@ -1,0 +1,452 @@
+openapi: 3.1.0
+info:
+  title: Complex-Case Layer API
+  version: 0.1.0
+  description: |
+    Backend API for healthcare prior-authorization and denial management.
+    All endpoints require Clerk authentication and are scoped to the caller's organization.
+    Appeals cannot be submitted without a recorded clinician sign-off (enforced at service and DB layers).
+  contact:
+    name: Engineering
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Case:
+      type: object
+      properties:
+        id: { type: string }
+        orgId: { type: string }
+        patientId: { type: string }
+        payerId: { type: string }
+        serviceType: { type: string }
+        caseType: { type: string, enum: [PRIOR_AUTH, DENIAL] }
+        status:
+          type: string
+          enum: [RECEIVED, TRIAGED, EVIDENCE_READY, P2P_SCHEDULED, APPEAL_DRAFTED, SUBMITTED, RESOLVED]
+        complexityScore: { type: number }
+        source: { type: string, enum: [EHR, RCM, VENDOR_HANDOFF] }
+        externalRef: { type: string }
+        assignedUserId: { type: string }
+        recoveredValueCents: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Appeal:
+      type: object
+      properties:
+        id: { type: string }
+        caseId: { type: string }
+        draftContent: { type: string }
+        draftedByModel: { type: string }
+        clinicianSignoffUserId: { type: string, nullable: true }
+        signedOffAt: { type: string, format: date-time, nullable: true }
+        status:
+          type: string
+          enum: [DRAFT, AWAITING_SIGNOFF, SIGNED, SUBMITTED, WON, LOST]
+        submittedAt: { type: string, format: date-time, nullable: true }
+
+    EvidencePack:
+      type: object
+      properties:
+        id: { type: string }
+        caseId: { type: string }
+        clinicalEvidence: { type: object }
+        citedCriteria: { type: array, items: { type: object } }
+        llmModel: { type: string }
+        status: { type: string, enum: [DRAFT, REVIEWED] }
+
+    Payer:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        externalId: { type: string }
+        region: { type: string }
+
+    PayerCriteria:
+      type: object
+      properties:
+        id: { type: string }
+        payerId: { type: string }
+        serviceType: { type: string }
+        region: { type: string }
+        criteriaText: { type: string }
+        version: { type: integer }
+        effectiveDate: { type: string, format: date-time }
+
+    Outcome:
+      type: object
+      properties:
+        id: { type: string }
+        caseId: { type: string }
+        payerId: { type: string }
+        denialReason: { type: string, nullable: true }
+        resolution: { type: string, enum: [APPROVED, UPHELD, PARTIAL] }
+        recoveredValueCents: { type: integer, nullable: true }
+        resolvedAt: { type: string, format: date-time }
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        message: { type: string }
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Service is alive
+
+  /readyz:
+    get:
+      summary: Readiness probe (checks DB and queue)
+      security: []
+      responses:
+        '200':
+          description: Service is ready
+
+  /v1/cases:
+    get:
+      summary: List cases for caller's org
+      tags: [Cases]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: payerId
+          in: query
+          schema: { type: string }
+        - name: assignedUserId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Array of cases
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Case' }
+    post:
+      summary: Create a case
+      tags: [Cases]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patientId, payerId, serviceType, caseType, source]
+              properties:
+                patientId: { type: string }
+                payerId: { type: string }
+                serviceType: { type: string }
+                caseType: { type: string, enum: [PRIOR_AUTH, DENIAL] }
+                source: { type: string, enum: [EHR, RCM, VENDOR_HANDOFF] }
+                externalRef: { type: string }
+                complexityScore: { type: number }
+      responses:
+        '201':
+          description: Case created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Case' }
+
+  /v1/cases/{id}:
+    get:
+      summary: Get a case by ID
+      tags: [Cases]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Case
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Case' }
+    patch:
+      summary: Transition case status (state machine enforced)
+      tags: [Cases]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [RECEIVED, TRIAGED, EVIDENCE_READY, P2P_SCHEDULED, APPEAL_DRAFTED, SUBMITTED, RESOLVED]
+      responses:
+        '200':
+          description: Updated case
+        '400':
+          description: Invalid transition
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/cases/{id}/evidence:
+    post:
+      summary: Enqueue evidence pack generation
+      tags: [Evidence]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '202':
+          description: Job enqueued
+    get:
+      summary: Get evidence packs for a case
+      tags: [Evidence]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Evidence packs
+
+  /v1/cases/{id}/p2p:
+    post:
+      summary: Schedule a peer-to-peer review
+      tags: [P2P]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reviewingPhysicianId, scheduledAt]
+              properties:
+                reviewingPhysicianId: { type: string }
+                scheduledAt: { type: string, format: date-time }
+                payerReviewerName: { type: string }
+                prepPackRef: { type: string }
+      responses:
+        '201':
+          description: P2P scheduled
+
+  /v1/p2p/{id}:
+    patch:
+      summary: Record P2P outcome
+      tags: [P2P]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome]
+              properties:
+                outcome: { type: string, enum: [PENDING, APPROVED, DENIED, RESCHEDULED] }
+                notes: { type: string }
+      responses:
+        '200':
+          description: Updated P2P
+
+  /v1/cases/{id}/appeal:
+    post:
+      summary: Enqueue appeal draft generation
+      tags: [Appeals]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '202':
+          description: Appeal draft generation enqueued
+
+  /v1/appeals/{id}/signoff:
+    post:
+      summary: Clinician sign-off on appeal (CLINICIAN role only)
+      tags: [Appeals]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Appeal signed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Appeal' }
+
+  /v1/appeals/{id}/submit:
+    post:
+      summary: Submit appeal (rejected unless signed off by clinician)
+      tags: [Appeals]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Appeal submitted
+        '422':
+          description: Sign-off required
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/cases/{id}/outcome:
+    post:
+      summary: Record case resolution
+      tags: [Outcomes]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payerId, resolution]
+              properties:
+                payerId: { type: string }
+                denialReason: { type: string }
+                resolution: { type: string, enum: [APPROVED, UPHELD, PARTIAL] }
+                recoveredValueCents: { type: integer }
+      responses:
+        '201':
+          description: Outcome recorded
+
+  /v1/payers:
+    get:
+      summary: List payers
+      tags: [Payers]
+      responses:
+        '200':
+          description: Array of payers
+    post:
+      summary: Create payer (ADMIN only)
+      tags: [Payers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, externalId, region]
+              properties:
+                name: { type: string }
+                externalId: { type: string }
+                region: { type: string }
+      responses:
+        '201':
+          description: Payer created
+
+  /v1/payers/{id}/criteria:
+    get:
+      summary: Get current payer criteria
+      tags: [Payers]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: serviceType
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Criteria list
+    post:
+      summary: Add a new version of payer criteria (ADMIN only)
+      tags: [Payers]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [serviceType, region, criteriaText]
+              properties:
+                serviceType: { type: string }
+                region: { type: string }
+                criteriaText: { type: string }
+                sourceUrl: { type: string, format: uri }
+      responses:
+        '201':
+          description: Criteria version created
+
+  /v1/analytics/denials:
+    get:
+      summary: Denial win rates grouped by payer and denial reason
+      tags: [Analytics]
+      responses:
+        '200':
+          description: Win rate data
+
+  /v1/ingest/webhook:
+    post:
+      summary: Vendor handoff intake — creates a case from vendor payload
+      tags: [Ingest]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patientId, payerId, serviceType, caseType]
+              properties:
+                patientId: { type: string }
+                payerId: { type: string }
+                serviceType: { type: string }
+                caseType: { type: string, enum: [PRIOR_AUTH, DENIAL] }
+                externalRef: { type: string }
+                complexityScore: { type: number }
+      responses:
+        '201':
+          description: Case created from vendor handoff
